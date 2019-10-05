@@ -28,7 +28,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
         })
     }
 
-    /// This creates a new VecFile that points at a file defined by path. 
+    /// This creates a new VecFile that points at a file with the given path. 
     /// NOTE: This truncates the file.
     pub fn new_with_path<P: AsRef<std::path::Path>>(path: P) 
         -> Result<Self, Box<dyn std::error::Error>> {
@@ -78,8 +78,11 @@ impl<T: Desse + DesseSized> VecFile<T> {
     }
 
    
-    /// Returns the element at the given index
-    pub fn get(&mut self, index: u64) -> Result<T, Box<dyn std::error::Error>> {
+    /// Tries to return the element at the given index.
+    ///
+    /// This will return Err if index is out of range, or if the underlying file is no longer
+    /// accessible.
+    pub fn try_get(&mut self, index: u64) -> Result<T, Box<dyn std::error::Error>> {
         if !self.bounds_check(index) {
             // Index is out of range
             return Err(Error::OutOfRange(index, self.len).into());
@@ -94,7 +97,18 @@ impl<T: Desse + DesseSized> VecFile<T> {
         Ok(ret)
     }
 
-    pub fn set(&mut self, index: u64, value: &T) -> Result<(), Box<dyn std::error::Error>> {
+    /// Returns the element at the given index.
+    ///
+    /// This will panic if index is out of range, or if the underlying file is no longer accessible
+    pub fn get(&mut self, index: u64) -> T {
+        self.try_get(index).unwrap()
+    }
+
+    /// Tries to set the element at the given index to value.
+    ///
+    /// This will return Err if index is out of range, or if the underlying file is no longer
+    /// accessible.
+    pub fn try_set(&mut self, index: u64, value: &T) -> Result<(), Box<dyn std::error::Error>> {
         if !self.bounds_check(index) {
             // Index is out of range
             return Err(Error::OutOfRange(index, self.len).into());
@@ -106,6 +120,13 @@ impl<T: Desse + DesseSized> VecFile<T> {
         self.write_at_curr_seek(value)?;
         self.reset_seek_to_len()?;
         Ok(())
+    }
+
+    /// Sets the element at the given index to value.
+    ///
+    /// This will panic if index is out of range, or if the underlying file is no longer accessible
+    pub fn set(&mut self, index: u64, value: &T) {
+        self.try_set(index, value).unwrap()
     }
 
     /// Resizes the len to fit the new_len. If new_len is less than the current len, the elements
@@ -175,7 +196,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     }
 
 
-    pub fn push(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn try_push(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
         if self.len < std::u64::MAX {
             self.expand_if_needed()?;
             self.write_at_curr_seek(value)?;
@@ -187,7 +208,11 @@ impl<T: Desse + DesseSized> VecFile<T> {
         }
     }
 
-    pub fn pop(&mut self) -> Result<T, Box<dyn std::error::Error>> {
+    pub fn push(&mut self, value: &T) {
+        self.try_push(value).unwrap()
+    }
+
+    pub fn try_pop(&mut self) -> Result<T, Box<dyn std::error::Error>> {
         if self.len > 0 {
             // The collection is not empty 
             // Moves back to the last element
@@ -205,15 +230,36 @@ impl<T: Desse + DesseSized> VecFile<T> {
             // The collection is empty, can't pop from an empty collection
             Err(Error::PopOnEmpty.into())
         }
+    }
 
-
-
+    pub fn pop(&mut self) -> T {
+        self.try_pop().unwrap()
     }
 
 
     pub fn element_size(&self) -> usize {
         std::mem::size_of::<<T as Desse>::Output>()
     }
+
+
+    /// Copies the original underlying file into a new file at path.
+    /// If a file exists there, it gets truncated.
+    pub fn to_named_file<U: AsRef<std::path::Path>>(&mut self, path: U) 
+        -> Result<(), Box<dyn std::error::Error>> {
+
+        let mut named_file = std::fs::OpenOptions::new()
+                                .read(true)
+                                .write(true)
+                                .create(true)
+                                .truncate(true)
+                                .open(path)?;
+
+        std::io::copy(&mut self.file, &mut named_file)?;
+        self.file = named_file;
+        Ok(())
+    }
+
+
 
     fn read_at_curr_seek(&mut self) -> Result<T, Box<dyn std::error::Error>> {
         let element_size = self.element_size();
@@ -245,13 +291,17 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
 }
 
-impl<T: Desse + DesseSized> IntoIterator for &VecFile<T> {
-    type Item = Result<T, Box<dyn std::error::Error>>;
+impl<T: Desse + DesseSized> std::iter::IntoIterator for &VecFile<T> {
+    type Item = T;
     type IntoIter = VecFileIterator<T>;
 
     fn into_iter(self) -> Self::IntoIter {
+        let mut file = self.file.try_clone().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
         VecFileIterator {
-            file: self.file.try_clone().unwrap(),
+            file,
+            len: self.len,
+            counter: 0,
             _phantom: PhantomData,
         }
     }
@@ -277,7 +327,6 @@ impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for VecFile<T> {
         let mut vec = Vec::with_capacity(std::mem::size_of::<T>());
 
         for value in &self {
-            let value = value?;
             vec.push(value);
         }
 
@@ -287,30 +336,26 @@ impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for VecFile<T> {
 }
 
 
+
+
 pub struct VecFileIterator<T: Desse + DesseSized> {
     file: File,
+    len: u64,
+    counter: u64,
     _phantom: PhantomData<T>,
 }
 
 impl<T: Desse + DesseSized> std::iter::Iterator for VecFileIterator<T> {
-    type Item = Result<T, Box<dyn std::error::Error>>;
+    type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
-        let mut buf = Vec::with_capacity(std::mem::size_of::<T>());
-        match (&mut self.file).take(std::mem::size_of::<T>() as u64).read_to_end(&mut buf) {
-            Ok(bytes_read) => {
-                if bytes_read == std::mem::size_of::<T>() {
-                    // VecFile guarantees that the given bytes are valid for the given type as long
-                    // as the file hasn't been altered by other processes
-                    Some(Ok(super::de_from(&buf).unwrap()))
-                }
-                else {
-                    None
-                }
-            },
-
-            Err(e) => {
-                Some(Err(e.into()))
-            }
+        if self.counter < self.len {
+            self.counter = self.counter + 1;
+            let mut buf = Vec::with_capacity(std::mem::size_of::<T>());
+            (&mut self.file).take(std::mem::size_of::<T>() as u64).read_to_end(&mut buf).unwrap();
+            Some(de_from(buf.as_slice()).unwrap())
+        }
+        else {
+            None
         }
     }
 }
@@ -387,15 +432,15 @@ mod tests {
         let num3: u64 = 0xaa00aa10;
         let num4: u64 = 0xbb00bbaa;
         let mut f: VecFile<u64> = VecFile::new_with_path("push_pop.bin").unwrap();
-        f.push(&num).unwrap();
-        f.push(&num2).unwrap();
-        f.push(&num3).unwrap();
-        f.push(&num4).unwrap();
+        f.push(&num);
+        f.push(&num2);
+        f.push(&num3);
+        f.push(&num4);
         
-        assert_eq!(f.pop().unwrap(), num4);
-        assert_eq!(f.pop().unwrap(), num3);
-        assert_eq!(f.pop().unwrap(), num2);
-        assert_eq!(f.pop().unwrap(), num);
+        assert_eq!(f.pop(), num4);
+        assert_eq!(f.pop(), num3);
+        assert_eq!(f.pop(), num2);
+        assert_eq!(f.pop(), num);
     }
 
     #[test]
@@ -409,18 +454,18 @@ mod tests {
         
         let mut f: VecFile<u16> = VecFile::new_with_path("set_get.bin").unwrap();
         f.resize(32, &num5).unwrap();
-        f.set(1, &num).unwrap();
-        f.set(3, &num2).unwrap();
-        f.set(6, &num3).unwrap();
-        f.set(13, &num4).unwrap();
-        f.push(&num6).unwrap();
+        f.set(1, &num);
+        f.set(3, &num2);
+        f.set(6, &num3);
+        f.set(13, &num4);
+        f.push(&num6);
         
-        assert_eq!(f.get(1).unwrap(), num);
-        assert_eq!(f.get(3).unwrap(), num2);
-        assert_eq!(f.get(5).unwrap(), num5);
-        assert_eq!(f.get(6).unwrap(), num3);
-        assert_eq!(f.get(13).unwrap(), num4);
-        assert_eq!(f.pop().unwrap(), num6);
+        assert_eq!(f.get(1), num);
+        assert_eq!(f.get(3), num2);
+        assert_eq!(f.get(5), num5);
+        assert_eq!(f.get(6), num3);
+        assert_eq!(f.get(13), num4);
+        assert_eq!(f.pop(), num6);
 
     }
 
@@ -430,19 +475,19 @@ mod tests {
         let slice = [0x1111, 0x3333, 0x2222, 0xffff, 0xdddd];
         f.extend_from_slice(&slice).unwrap();
         
-        assert_eq!(f.get(0).unwrap(), 0x1111);
-        assert_eq!(f.get(3).unwrap(), 0xffff);
-        assert_eq!(f.get(2).unwrap(), 0x2222);
-        assert_eq!(f.get(4).unwrap(), 0xdddd);
-        assert_eq!(f.get(1).unwrap(), 0x3333);
+        assert_eq!(f.get(0), 0x1111);
+        assert_eq!(f.get(3), 0xffff);
+        assert_eq!(f.get(2), 0x2222);
+        assert_eq!(f.get(4), 0xdddd);
+        assert_eq!(f.get(1), 0x3333);
     }
 
     #[test]
     fn iterator() {
         let orig_values: Vec<u16> = vec![0x2222, 0xffff, 0xdddd, 0xaaaa, 0x8888];
-        let mut f: VecFile<u16> = orig_values.clone().try_into().unwrap();
+        let f: VecFile<u16> = orig_values.clone().try_into().unwrap();
         
-        for (orig, arr_file) in orig_values.into_iter().zip(f.into_iter().map(|v| v.unwrap())) {
+        for (orig, arr_file) in orig_values.into_iter().zip(f.into_iter()) {
             assert_eq!(orig, arr_file);
         }
     }
@@ -452,7 +497,14 @@ mod tests {
     #[should_panic]
     fn index_out_of_bounds() {
         let mut f: VecFile<u16> = vec![0x2222, 0xffff, 0xdddd, 0xaaaa].try_into().unwrap();
-        f.get(4).unwrap();
+        f.get(4);
+    }
+
+    #[test]
+    #[should_panic]
+    fn pop_on_empty() {
+        let mut f: VecFile<u16> = vec![].try_into().unwrap();
+        f.pop();
     }
 
     #[test]
