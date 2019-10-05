@@ -1,5 +1,5 @@
 [package]
-name = "file_arr_wrapper"
+name = "vec_file"
 version = "0.1.0"
 authors = ["Aaron Flores <aaronjflores962@gmail.com>"]
 edition = "2018"

@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::marker::PhantomData;
 
 
-pub struct ArrFile<T: Desse + DesseSized> {
+pub struct VecFile<T: Desse + DesseSized> {
     file: File,
     len: u64,
     cap: u64,
@@ -12,13 +12,13 @@ pub struct ArrFile<T: Desse + DesseSized> {
 }
 
 
-impl<T: Desse + DesseSized> ArrFile<T> {
+impl<T: Desse + DesseSized> VecFile<T> {
 
      
     // Note: At the end of every public method, the file should be seek'd to the pos of where a new
     // element should be written to.
    
-    /// Creates a new empty ArrFile using a temporary file
+    /// Creates a new empty VecFile using a temporary file
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             file: tempfile::tempfile()?,
@@ -28,7 +28,7 @@ impl<T: Desse + DesseSized> ArrFile<T> {
         })
     }
 
-    /// This creates a new ArrFile that points at a file defined by path. 
+    /// This creates a new VecFile that points at a file defined by path. 
     /// NOTE: This truncates the file.
     pub fn new_with_path<P: AsRef<std::path::Path>>(path: P) 
         -> Result<Self, Box<dyn std::error::Error>> {
@@ -245,12 +245,12 @@ impl<T: Desse + DesseSized> ArrFile<T> {
 
 }
 
-impl<T: Desse + DesseSized> IntoIterator for &ArrFile<T> {
+impl<T: Desse + DesseSized> IntoIterator for &VecFile<T> {
     type Item = Result<T, Box<dyn std::error::Error>>;
-    type IntoIter = ArrFileIterator<T>;
+    type IntoIter = VecFileIterator<T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ArrFileIterator {
+        VecFileIterator {
             file: self.file.try_clone().unwrap(),
             _phantom: PhantomData,
         }
@@ -258,17 +258,17 @@ impl<T: Desse + DesseSized> IntoIterator for &ArrFile<T> {
 }
 
 
-impl<T: Desse + DesseSized> std::convert::TryFrom<Vec<T>> for ArrFile<T> {
+impl<T: Desse + DesseSized> std::convert::TryFrom<Vec<T>> for VecFile<T> {
     type Error = Box<dyn std::error::Error>;
     fn try_from(vec: Vec<T>) -> Result<Self, Self::Error> {
-        let mut ret = ArrFile::new()?;
+        let mut ret = VecFile::new()?;
         ret.reserve(vec.len() as u64)?;
         ret.extend_from_slice(&vec)?;
         Ok(ret)
     }
 }
 
-impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for ArrFile<T> {
+impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for VecFile<T> {
     type Error = Box<dyn std::error::Error>;
     fn try_into(self) -> Result<Vec<T>, Self::Error> {
         if self.len() > (std::usize::MAX as u64) {
@@ -287,19 +287,19 @@ impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for ArrFile<T> {
 }
 
 
-pub struct ArrFileIterator<T: Desse + DesseSized> {
+pub struct VecFileIterator<T: Desse + DesseSized> {
     file: File,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Desse + DesseSized> std::iter::Iterator for ArrFileIterator<T> {
+impl<T: Desse + DesseSized> std::iter::Iterator for VecFileIterator<T> {
     type Item = Result<T, Box<dyn std::error::Error>>;
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf = Vec::with_capacity(std::mem::size_of::<T>());
         match (&mut self.file).take(std::mem::size_of::<T>() as u64).read_to_end(&mut buf) {
             Ok(bytes_read) => {
                 if bytes_read == std::mem::size_of::<T>() {
-                    // ArrFile guarantees that the given bytes are valid for the given type as long
+                    // VecFile guarantees that the given bytes are valid for the given type as long
                     // as the file hasn't been altered by other processes
                     Some(Ok(super::de_from(&buf).unwrap()))
                 }
@@ -386,7 +386,7 @@ mod tests {
         let num2: u64 = 0xdd00ddf0;
         let num3: u64 = 0xaa00aa10;
         let num4: u64 = 0xbb00bbaa;
-        let mut f: ArrFile<u64> = ArrFile::new_with_path("push_pop.bin").unwrap();
+        let mut f: VecFile<u64> = VecFile::new_with_path("push_pop.bin").unwrap();
         f.push(&num).unwrap();
         f.push(&num2).unwrap();
         f.push(&num3).unwrap();
@@ -407,7 +407,7 @@ mod tests {
         let num5: u16 = 0xffff;
         let num6: u16 = 0x5555;
         
-        let mut f: ArrFile<u16> = ArrFile::new_with_path("set_get.bin").unwrap();
+        let mut f: VecFile<u16> = VecFile::new_with_path("set_get.bin").unwrap();
         f.resize(32, &num5).unwrap();
         f.set(1, &num).unwrap();
         f.set(3, &num2).unwrap();
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn slices() {
-        let mut f: ArrFile<u16> = ArrFile::new().unwrap();
+        let mut f: VecFile<u16> = VecFile::new().unwrap();
         let slice = [0x1111, 0x3333, 0x2222, 0xffff, 0xdddd];
         f.extend_from_slice(&slice).unwrap();
         
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn iterator() {
         let orig_values: Vec<u16> = vec![0x2222, 0xffff, 0xdddd, 0xaaaa, 0x8888];
-        let mut f: ArrFile<u16> = orig_values.clone().try_into().unwrap();
+        let mut f: VecFile<u16> = orig_values.clone().try_into().unwrap();
         
         for (orig, arr_file) in orig_values.into_iter().zip(f.into_iter().map(|v| v.unwrap())) {
             assert_eq!(orig, arr_file);
@@ -451,14 +451,14 @@ mod tests {
     #[test]
     #[should_panic]
     fn index_out_of_bounds() {
-        let mut f: ArrFile<u16> = vec![0x2222, 0xffff, 0xdddd, 0xaaaa].try_into().unwrap();
+        let mut f: VecFile<u16> = vec![0x2222, 0xffff, 0xdddd, 0xaaaa].try_into().unwrap();
         f.get(4).unwrap();
     }
 
     #[test]
     fn try_from_into() {
         let orig_vec: Vec<u16> = vec![0x1111, 0x2222, 0x3333, 0x4444, 0x5555];
-        let orig_f: ArrFile<u16> = orig_vec.clone().try_into().unwrap();
+        let orig_f: VecFile<u16> = orig_vec.clone().try_into().unwrap();
         let vec: Vec<u16> = orig_f.try_into().unwrap();
     
         assert_eq!(orig_vec.len(), vec.len());
