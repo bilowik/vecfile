@@ -5,13 +5,13 @@ use std::marker::PhantomData;
 
 
 pub struct VecFile<T: Desse + DesseSized> {
-    pub file: File,
-    pub shadows: Vec<File>,
-    pub write_at_curr_seek:
+    file: File,
+    shadows: Vec<File>,
+    write_at_curr_seek:
         fn(&mut VecFile<T>, &T) -> Result<(), Box<dyn std::error::Error>>,
-    pub len: u64,
-    pub cap: u64,
-    pub _phantom: PhantomData<*const T>,
+    len: u64,
+    cap: u64,
+    _phantom: PhantomData<*const T>,
 }
 
 
@@ -416,6 +416,11 @@ impl<T: Desse + DesseSized> VecFile<T> {
         
 
 }
+
+
+impl<T: Desse + DesseSized> Clone for VecFile<T> {
+    fn clone(&self) -> Self {
+        Self {
 
 
 
