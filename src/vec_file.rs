@@ -4,14 +4,28 @@ use std::fs::{File, OpenOptions};
 use std::marker::PhantomData;
 
 
+/// A file that can be treated similarly to a Vec. By default the underlying file is a temporary
+/// file which is requested from the operating system, but there's options to used path'd files as
+/// well.
+///
+/// Has optionally "shadowing" which syncs 1 or more files which can automatically replace the
+/// original in case of IO or other types of errors. Once a shadow is used to replace the original,
+/// another one is automatically generated and synced, so if there's 3 shadows there will always be
+/// 3. 
+///
+/// While it's not technically required, the reserve method can be used to reduce file system
+/// allocations, which may or may not be expensive depending on the underlying file system.
+///
+/// Note: Index and IndexMut are not implemented since they require returning references, and we
+/// cannot get a reference from a section of a file.
 pub struct VecFile<T: Desse + DesseSized> {
-    file: File,
-    shadows: Vec<File>,
-    write_at_curr_seek:
+    file: File, // The underlying file 
+    shadows: Vec<File>, // The shadows that may exist
+    write_at_curr_seek: // The write function pointer, which will point at 1 of 2 write methods.
         fn(&mut VecFile<T>, &T) -> Result<(), Box<dyn std::error::Error>>,
-    len: u64,
-    cap: u64,
-    _phantom: PhantomData<*const T>,
+    len: u64, // The current number of elements in the file
+    cap: u64, // The max number of elements the file can hold at its given allocated lenght
+    _phantom: PhantomData<*const T>, // Phantom data for the generic type parameter
 }
 
 
@@ -21,7 +35,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     // Note: At the end of every public method, the file should be seek'd to the pos of where a new
     // element should be written to.
    
-    /// Creates a new empty VecFile using a temporary file
+    /// Creates a new empty VecFile.
     pub fn new() -> Self {
         Default::default()
     }
