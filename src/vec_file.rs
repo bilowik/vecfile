@@ -200,7 +200,6 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
     /// Reserves capacity for at least 
     pub fn reserve(&mut self, additional: u64) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: INclude shadow implementation
         let needed_cap = self.len + additional;
         while self.cap < needed_cap {
             self.expand()?;
