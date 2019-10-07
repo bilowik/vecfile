@@ -4,18 +4,18 @@ use std::fs::{File, OpenOptions};
 use std::marker::PhantomData;
 
 
-pub struct VecFile<T: Desse + DesseSized + Clone> {
+pub struct VecFile<T: Desse + DesseSized> {
     pub file: File,
     pub shadows: Vec<File>,
     pub write_at_curr_seek:
-        fn(&mut VecFile<T>, T) -> Result<(), Box<dyn std::error::Error>>,
+        fn(&mut VecFile<T>, &T) -> Result<(), Box<dyn std::error::Error>>,
     pub len: u64,
     pub cap: u64,
     pub _phantom: PhantomData<*const T>,
 }
 
 
-impl<T: Desse + DesseSized + Clone> VecFile<T> {
+impl<T: Desse + DesseSized> VecFile<T> {
 
      
     // Note: At the end of every public method, the file should be seek'd to the pos of where a new
@@ -157,7 +157,7 @@ impl<T: Desse + DesseSized + Clone> VecFile<T> {
 
         let offset_index = self.calc_index(index)?;
         self.file.seek(SeekFrom::Start(offset_index))?;
-        (self.write_at_curr_seek)(self, value.clone())?;
+        (self.write_at_curr_seek)(self, value)?;
         self.reset_seek_to_len()?;
         Ok(())
     }
@@ -179,7 +179,7 @@ impl<T: Desse + DesseSized + Clone> VecFile<T> {
             while self.len() < new_len {
                 // We could just continually call push here, but we know we don't need to do 
                 // expansion checks or bound checks, so this will be faster
-                (self.write_at_curr_seek)(self, value.clone())?;
+                (self.write_at_curr_seek)(self, value)?;
                 self.len = self.len + 1;
             }
 
@@ -206,7 +206,7 @@ impl<T: Desse + DesseSized + Clone> VecFile<T> {
 
         // Copy in the slice
         for e in slice {
-            (self.write_at_curr_seek)(self, e.clone())?;
+            (self.write_at_curr_seek)(self, &e)?;
         }
         
         Ok(())
@@ -254,7 +254,7 @@ impl<T: Desse + DesseSized + Clone> VecFile<T> {
     pub fn try_push(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
         if self.len < std::u64::MAX {
             self.expand_if_needed()?;
-            (self.write_at_curr_seek)(self, value.clone())?;
+            (self.write_at_curr_seek)(self, value)?;
             self.len = self.len + 1;
             Ok(())
         }
@@ -333,14 +333,14 @@ impl<T: Desse + DesseSized + Clone> VecFile<T> {
     }
 
     // Writes to just the underlying file 
-    fn write_solo(&mut self, value: T) -> Result<(), Box<dyn std::error::Error>> {
-        let value_ser = ser_to::<T>(&value)?;
+    fn write_solo(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
+        let value_ser = ser_to::<T>(value)?;
         self.file.write_all(value_ser.as_slice())?;
         Ok(())
     }
 
-    fn write_with_shadows(&mut self, value: T) -> Result<(), Box<dyn std::error::Error>> {
-        let value_ser = ser_to::<T>(&value)?;
+    fn write_with_shadows(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
+        let value_ser = ser_to::<T>(value)?;
 
         while let Err(_) = self.file.write_all(value_ser.as_slice()) {
             // The write failed for some reason, replace the main file with one of it's shadows
@@ -422,7 +422,9 @@ impl<T: Desse + DesseSized + Clone> VecFile<T> {
 
 }
 
-impl<T: Desse + DesseSized + PartialEq + Eq + Clone + std::fmt::Debug> VecFile<T> { 
+
+
+impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> { 
     pub fn confirm_shadow_equivalence(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
 
         if self.shadows.len() > 1 {
@@ -470,7 +472,7 @@ impl<T: Desse + DesseSized + PartialEq + Eq + Clone + std::fmt::Debug> VecFile<T
 
         
 
-impl<T: Desse + DesseSized + Clone> std::iter::IntoIterator for &VecFile<T> {
+impl<T: Desse + DesseSized> std::iter::IntoIterator for &VecFile<T> {
     type Item = T;
     type IntoIter = VecFileIterator<T>;
 
@@ -487,17 +489,17 @@ impl<T: Desse + DesseSized + Clone> std::iter::IntoIterator for &VecFile<T> {
 }
 
 
-impl<T: Desse + DesseSized + Clone> std::convert::TryFrom<Vec<T>> for VecFile<T> {
+impl<T: Desse + DesseSized> std::convert::TryFrom<Vec<T>> for VecFile<T> {
     type Error = Box<dyn std::error::Error>;
     fn try_from(vec: Vec<T>) -> Result<Self, Self::Error> {
-        let mut ret = VecFile::new()?;
+        let mut ret = VecFile::new();
         ret.reserve(vec.len() as u64)?;
         ret.extend_from_slice(&vec)?;
         Ok(ret)
     }
 }
 
-impl<T: Desse + DesseSized + Clone> std::convert::TryInto<Vec<T>> for VecFile<T> {
+impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for VecFile<T> {
     type Error = Box<dyn std::error::Error>;
     fn try_into(self) -> Result<Vec<T>, Self::Error> {
         if self.len() > (std::usize::MAX as u64) {
@@ -517,14 +519,14 @@ impl<T: Desse + DesseSized + Clone> std::convert::TryInto<Vec<T>> for VecFile<T>
 
 
 
-pub struct VecFileIterator<T: Desse + DesseSized + Clone> {
+pub struct VecFileIterator<T: Desse + DesseSized> {
     file: File,
     len: u64,
     counter: u64,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Desse + DesseSized + Clone> std::iter::Iterator for VecFileIterator<T> {
+impl<T: Desse + DesseSized> std::iter::Iterator for VecFileIterator<T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
         if self.counter < self.len {
@@ -706,7 +708,7 @@ mod tests {
 
     #[test]
     fn slices() {
-        let mut f: VecFile<u16> = VecFile::new().unwrap();
+        let mut f: VecFile<u16> = VecFile::new();
         let slice = [123, 456, 789, 987, 654];
         f.extend_from_slice(&slice).unwrap();
 
@@ -721,7 +723,7 @@ mod tests {
     #[test]
     fn iterator() {
         let orig_values: Vec<u16> = vec![0x2222, 0xffff, 0xdddd, 0xaaaa, 0x8888];
-        let mut f: VecFile<u16> = VecFile::new().unwrap();
+        let mut f: VecFile<u16> = VecFile::new();
         f.extend_from_slice(orig_values.as_slice()).unwrap();
         for (orig, arr_file) in orig_values.into_iter().zip(f.into_iter()) {
             assert_eq!(orig, arr_file);
@@ -757,7 +759,7 @@ mod tests {
     #[test]
     fn shadows() {
         //let mut f: VecFile<u16> = vec![1, 2, 1, 2, 122, 155].try_into().unwrap();
-        let mut f: VecFile<u16> = VecFile::new().unwrap();
+        let mut f: VecFile<u16> = VecFile::new();
         f.add_shadows(3).unwrap();
         f.push(&1);
         f.push(&2);
