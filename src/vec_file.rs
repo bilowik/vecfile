@@ -86,7 +86,10 @@ impl<T: Desse + DesseSized> VecFile<T> {
         clone
     }
 
-
+    /// Adds a number of additional shadows to the VecFile.
+    /// 
+    /// This does not need to be re-done if a shadow is used to replace the original as its done
+    /// automatically.
     pub fn add_shadows(&mut self, additional_shadows: usize) -> Result<(), Box<dyn std::error::Error>> {
         if self.shadows.len() == 0 {
             // These are the first shadows being added, change the write function to one that
@@ -125,7 +128,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
          index < self.len
     }
 
-    /// Returns true if the current capacity could fit at least one more element
+    /// Returns true if the given index is within the current capacity
     pub fn capacity_check(&self, index: u64) -> bool {
         index < self.cap
     }
@@ -212,7 +215,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
     }
 
-    /// Reserves capacity for at least 
+    /// Reserves capacity for at least 'additional' more elements
     pub fn reserve(&mut self, additional: u64) -> Result<(), Box<dyn std::error::Error>> {
         let needed_cap = self.len + additional;
         while self.cap < needed_cap {
@@ -236,8 +239,12 @@ impl<T: Desse + DesseSized> VecFile<T> {
     }
 
 
+    /// Truncates the collection to new_len, or does nothing if new_len is greater than the
+    /// current length
     pub fn truncate(&mut self, new_len: u64) {
-        self.len = new_len;
+        if self.len > new_len {
+            self.len = new_len;
+        }
     }
 
     fn expand(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -274,7 +281,12 @@ impl<T: Desse + DesseSized> VecFile<T> {
     }
 
 
+    /// Tries to push an element to the end of the collection.
+    ///
+    /// This will return an Error if the underlying file's len would exceed std::u64::MAX or 
+    /// if the underlying file has write issues and no shadows exist.
     pub fn try_push(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: This if statement is not correct, fixme
         if self.len < std::u64::MAX {
             self.expand_if_needed()?;
             (self.write_at_curr_seek)(self, value)?;
@@ -286,10 +298,18 @@ impl<T: Desse + DesseSized> VecFile<T> {
         }
     }
 
+    /// Pushes the element to the end of the collection.
+    ///
+    /// This will panic if the underlying file's len would exceed std::u64::MAX or 
+    /// if the underlying file has write issues and no shadows exist.
     pub fn push(&mut self, value: &T) {
         self.try_push(value).unwrap()
     }
 
+    /// Pops the element at the end of the collection.
+    ///
+    /// This will return an error if the underlying file has read issues and no shadows exist or
+    /// if the list is empty.
     pub fn try_pop(&mut self) -> Result<T, Box<dyn std::error::Error>> {
         if self.len > 0 {
             // The collection is not empty 
@@ -310,11 +330,15 @@ impl<T: Desse + DesseSized> VecFile<T> {
         }
     }
 
+    /// Pops the element at the end of the collection.
+    ///
+    /// This will panic if the underlying file has read issues and no shadows exist or the list is
+    /// empty.
     pub fn pop(&mut self) -> T {
         self.try_pop().unwrap()
     }
 
-
+    /// Returns the size, in bytes, of the element associated with this list.
     pub fn element_size(&self) -> usize {
         std::mem::size_of::<<T as Desse>::Output>()
     }
