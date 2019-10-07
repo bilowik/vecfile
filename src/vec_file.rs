@@ -286,8 +286,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// This will return an Error if the underlying file's len would exceed std::u64::MAX or 
     /// if the underlying file has write issues and no shadows exist.
     pub fn try_push(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: This if statement is not correct, fixme
-        if self.len < std::u64::MAX {
+        if self.calc_index(self.len)? {
             self.expand_if_needed()?;
             (self.write_at_curr_seek)(self, value)?;
             self.len = self.len + 1;
