@@ -55,6 +55,22 @@ impl<T: Desse + DesseSized> VecFile<T> {
             _phantom: PhantomData,
         }
     }
+    
+   
+    /// Since the Clone trait requires self to be immutable, a standalone method had to be written.
+    pub fn clone(&mut self) -> Self {
+        // This could be done much more efficiently, however it's prefered to have shadow
+        // protection in case of read/write issues, so we want to do it with VecFile's methods
+        
+        let mut clone = Self::default();
+        clone.add_shadows(self.shadows.len()).unwrap();
+        clone.reserve(self.len).unwrap(); // Should be relatively safe if shadows are in play
+
+        for element in self.into_iter() {
+            clone.push(&element);
+        }
+        clone
+    }
 
 
     pub fn add_shadows(&mut self, additional_shadows: usize) -> Result<(), Box<dyn std::error::Error>> {
@@ -184,6 +200,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
     /// Reserves capacity for at least 
     pub fn reserve(&mut self, additional: u64) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: INclude shadow implementation
         let needed_cap = self.len + additional;
         while self.cap < needed_cap {
             self.expand()?;
@@ -410,15 +427,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
 }
 
-/*
-impl<T: Desse + DesseSized> Clone for VecFile<T> {
-    fn clone(&mut self) -> Self {
-        // This could be done much more efficiently, however it's prefered to have shadow
-        // protection in case of read/write issues, so we want to do it with VecFile's methods
-        
-        let mut clone = Default::default();
-        
- */       
+
 
 
 
