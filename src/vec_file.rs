@@ -117,7 +117,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     }
 
     /// Removes all shadows
-    pub fn clear_all_shadows(&mut self) {
+    pub fn clear_shadows(&mut self) {
         self.shadows = vec![];
         self.write_at_curr_seek = Self::write_solo;
     }
@@ -432,7 +432,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
         }
         for shadow in &mut self.shadows {
             //TODO if a write fails replace it with a new shadow
-            dbg!(shadow.write_all(value_ser.as_slice())?);
+            shadow.write_all(value_ser.as_slice())?;
         }
         Ok(())
     }
@@ -461,12 +461,15 @@ impl<T: Desse + DesseSized> VecFile<T> {
     fn new_shadow(&mut self) -> Result<File, Box<dyn std::error::Error>> {
         // Continually generate temporary files until one passes the read/write test
         let mut file = tested_tempfile();
-        file.seek(SeekFrom::Start(0))?;
 
-        file.set_len(self.file.metadata()?.len())?;
+        file.set_len(self.cap * self.element_size() as u64)?;
         let mut orig_read_fail_counter = 0;
         let orig_read_fail_counter_max = 5;
-        while let Err(_) = std::io::copy(&mut self.file, &mut file) {
+
+        while let Err(_) = self.file.seek(SeekFrom::Start(0))
+                                .and(std::io::copy(&mut self.file, &mut file)) {
+            // Either the seek or the copy failed, so test the dest file for writeability.        
+           
             if let Ok(_) = rw_test(&mut file) {
                 // The destination file is passing read/write tests still, so the issue
                 // lies with the original file potentially.
@@ -484,6 +487,9 @@ impl<T: Desse + DesseSized> VecFile<T> {
                         self.replace_with_shadow()?;
                     }
                 }
+                // Seek file back to the beginning. Unwrawpping is safe since we know it passed the
+                // rw test
+                file.seek(SeekFrom::Start(0)).unwrap();
             }
 
             else {
@@ -494,6 +500,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
             }
         }
         self.reset_seek_to_len()?;
+        file.seek(SeekFrom::Start(self.calc_index(self.len()).unwrap())).unwrap();
         Ok(file)
     }
         
@@ -536,7 +543,7 @@ impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> {
                     // elements are equal
                     if !s1.into_iter()
                              .zip(s2.into_iter())
-                             .all(|(e1, e2)| dbg!(e1) == dbg!(e2)) {
+                             .all(|(e1, e2)| e1 == e2) {
                         return Ok(false);
                     }
                 }
@@ -556,7 +563,7 @@ impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> {
 
             let ret = orig.into_iter()
                             .zip(s1.into_iter())
-                            .all(|(e1, e2)| dbg!(e1) == dbg!(e2));
+                            .all(|(e1, e2)| e1 == e2);
             self.reset_seek_to_len()?;
             Ok(ret)
         }
@@ -876,9 +883,10 @@ mod tests {
 
     #[test]
     fn rounded_test() {
-        let vec = vec![12u32, 8, 4, 0, 4, 9, 1, 0];
+        let mut vec = vec![12u32, 8, 4, 0, 4, 9, 1, 0];
         let mut vecf: VecFile<_> = vec.clone().try_into().unwrap();
-        vecf.add_shadows(2);
+        let vec_other = vec![512u32, 434, 2830, 3940, 32432];
+        vecf.add_shadows(2).unwrap();
         vecf.push(&18);
         vecf.push(&12);
 
@@ -886,9 +894,37 @@ mod tests {
         vecf.pop();
         assert_eq!(vecf.len(), (vec.len() as u64) + 1);
         vecf.pop();
-        dbg!(vecf.into_iter().collect::<Vec<u32>>());
         assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
         assert!(vecf.confirm_shadow_equivalence().unwrap());
+        vecf.clear_shadows();
+        vecf.add_shadows(5).unwrap();
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+        vecf.push(&8);
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+        vecf.remove_shadows(3);
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+        vec.push(8);
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+        vec.extend_from_slice(vec_other.as_ref());
+        vecf.extend_from_slice(vec_other.as_ref()).unwrap();
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+        vec.pop();
+        vecf.pop();
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+        vec.resize(10, 0);
+        vecf.resize(10, &0).unwrap();
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+        vec.truncate(3);
+        vecf.truncate(3);
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+
+        
+
 
 
     }
