@@ -261,7 +261,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
     /// Tries to create a VecFile from an iterator
     pub fn try_from_iter<U: IntoIterator<Item=T>>(&mut self, iter: U) 
-        -> Result<(), Box<std::error::Error>> {
+        -> Result<Self, Box<dyn std::error::Error>> {
 
         let mut vf = VecFile::new();
         vf.add_shadows(1)?; // To protect against potential read errors.
@@ -271,7 +271,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
         }
         
         vf.remove_shadows(1);
-        vf
+        Ok(vf)
     }
 
     fn expand(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -594,14 +594,8 @@ impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for VecFile<T> {
         if self.len() > (std::usize::MAX as u64) {
             return Err(Error::LenExceedsUsize(self.len()).into());
         }
-        let mut vec = Vec::with_capacity(std::mem::size_of::<T>());
 
-        for value in &self {
-            vec.push(value);
-        }
-
-        Ok(vec)
-
+        Ok((&self).into_iter().collect())
     }
 }
 
