@@ -91,7 +91,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// This does not need to be re-done if a shadow is used to replace the original as its done
     /// automatically.
     pub fn add_shadows(&mut self, additional_shadows: usize) -> Result<(), Box<dyn std::error::Error>> {
-        if self.shadows.len() == 0 {
+        if (self.write_at_curr_seek as usize) == (Self::write_solo as usize) {
             // These are the first shadows being added, change the write function to one that
             // includes shadows
             self.write_at_curr_seek = Self::write_with_shadows;
@@ -106,15 +106,20 @@ impl<T: Desse + DesseSized> VecFile<T> {
         Ok(())
     }
 
+    /// Removes the given number of shadows.
     pub fn remove_shadows(&mut self, shadow_to_remove: usize) {
-
         for _ in 0..shadow_to_remove {
             self.shadows.pop();
         }
+        if self.shadows.len() == 0 {
+            self.write_at_curr_seek = Self::write_solo;
+        }
     }
 
+    /// Removes all shadows
     pub fn clear_all_shadows(&mut self) {
         self.shadows = vec![];
+        self.write_at_curr_seek = Self::write_solo;
     }
 
 
@@ -361,6 +366,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// This will panic if the underlying file has read issues and no shadows exist or the list is
     /// empty.
     pub fn pop(&mut self) -> T {
+        // TODO: Change this and try_pop to return Option<T>
         self.try_pop().unwrap()
     }
 
@@ -424,10 +430,9 @@ impl<T: Desse + DesseSized> VecFile<T> {
             // The write failed for some reason, replace the main file with one of it's shadows
             self.replace_with_shadow()?;
         }
-
         for shadow in &mut self.shadows {
             //TODO if a write fails replace it with a new shadow
-            shadow.write_all(value_ser.as_slice())?;
+            dbg!(shadow.write_all(value_ser.as_slice())?);
         }
         Ok(())
     }
@@ -531,7 +536,7 @@ impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> {
                     // elements are equal
                     if !s1.into_iter()
                              .zip(s2.into_iter())
-                             .all(|(e1, e2)| e1 == e2) {
+                             .all(|(e1, e2)| dbg!(e1) == dbg!(e2)) {
                         return Ok(false);
                     }
                 }
@@ -551,7 +556,7 @@ impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> {
 
             let ret = orig.into_iter()
                             .zip(s1.into_iter())
-                            .all(|(e1, e2)| e1 == e2);
+                            .all(|(e1, e2)| dbg!(e1) == dbg!(e2));
             self.reset_seek_to_len()?;
             Ok(ret)
         }
@@ -869,8 +874,24 @@ mod tests {
         assert!(f.confirm_shadow_equivalence().unwrap());
     }
 
-//    #[test]
-//    fn rounded_test() {
+    #[test]
+    fn rounded_test() {
+        let vec = vec![12u32, 8, 4, 0, 4, 9, 1, 0];
+        let mut vecf: VecFile<_> = vec.clone().try_into().unwrap();
+        vecf.add_shadows(2);
+        vecf.push(&18);
+        vecf.push(&12);
+
+        assert_eq!(vecf.len(), (vec.len() as u64) + 2);
+        vecf.pop();
+        assert_eq!(vecf.len(), (vec.len() as u64) + 1);
+        vecf.pop();
+        dbg!(vecf.into_iter().collect::<Vec<u32>>());
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
+
+
+    }
 
 
 
