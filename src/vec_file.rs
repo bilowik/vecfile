@@ -4,42 +4,82 @@ use std::fs::{File, OpenOptions};
 use std::marker::PhantomData;
 
 
-pub struct VecFile<T: Desse + DesseSized> {
-    file: File,
-    len: u64,
-    cap: u64,
-    _phantom: PhantomData<*const T>,
+pub struct VecFile<T: Desse + DesseSized + Clone> {
+    pub file: File,
+    pub shadows: Vec<File>,
+    pub write_at_curr_seek:
+        fn(&mut VecFile<T>, T) -> Result<(), Box<dyn std::error::Error>>,
+    pub len: u64,
+    pub cap: u64,
+    pub _phantom: PhantomData<*const T>,
 }
 
 
-impl<T: Desse + DesseSized> VecFile<T> {
+impl<T: Desse + DesseSized + Clone> VecFile<T> {
 
      
     // Note: At the end of every public method, the file should be seek'd to the pos of where a new
     // element should be written to.
    
     /// Creates a new empty VecFile using a temporary file
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            file: tempfile::tempfile()?,
+    pub fn new() -> Self {
+        Self {
+            file: tested_tempfile(),
+            shadows: Vec::with_capacity(0), // Wait to allocate, since most won't use shadows
+            write_at_curr_seek: Self::write_solo, // The function that is called on writes.
             len: 0,
             cap: 8,
             _phantom: PhantomData,
-        })
+        }
     }
 
     /// This creates a new VecFile that points at a file with the given path. 
     /// NOTE: This truncates the file.
     pub fn new_with_path<P: AsRef<std::path::Path>>(path: P) 
         -> Result<Self, Box<dyn std::error::Error>> {
-
         Ok(Self {
             file: OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?,
+            shadows: Vec::with_capacity(0),
+            write_at_curr_seek: Self::write_solo,
             len: 0,
             cap: 8,
             _phantom: PhantomData,
         })
     }
+
+    /// Creates a VecFile instance with the given parts
+    ///
+    /// This is considered unsafe since there's no checks or guarantees that the reconstructed
+    /// VecFile has the given len or cap or if the underlying data is valid data for the given type
+    /// T.
+    pub unsafe fn from_raw_parts(file: File, len: u64, cap: u64) -> Self {
+        Self {
+            file,
+            shadows: Vec::with_capacity(0),
+            write_at_curr_seek: Self::write_solo,
+            len,
+            cap,
+            _phantom: PhantomData,
+        }
+    }
+
+
+    pub fn add_shadows(&mut self, additional_shadows: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if self.shadows.len() == 0 {
+            // These are the first shadows being added, change the write function to one that
+            // includes shadows
+            self.write_at_curr_seek = Self::write_with_shadows;
+        }
+        if additional_shadows > 0 {
+            self.shadows.reserve(additional_shadows);
+            for _ in 0..additional_shadows {
+                let new_shadow = self.new_shadow()?;
+                self.shadows.push(new_shadow);
+            }
+        }
+        Ok(())
+    }
+
 
 
     /// Checks that the given index is a useable index, which it will be as long as 
@@ -117,7 +157,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
         let offset_index = self.calc_index(index)?;
         self.file.seek(SeekFrom::Start(offset_index))?;
-        self.write_at_curr_seek(value)?;
+        (self.write_at_curr_seek)(self, value.clone())?;
         self.reset_seek_to_len()?;
         Ok(())
     }
@@ -139,7 +179,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
             while self.len() < new_len {
                 // We could just continually call push here, but we know we don't need to do 
                 // expansion checks or bound checks, so this will be faster
-                self.write_at_curr_seek(&value)?;
+                (self.write_at_curr_seek)(self, value.clone())?;
                 self.len = self.len + 1;
             }
 
@@ -166,7 +206,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
         // Copy in the slice
         for e in slice {
-            self.write_at_curr_seek(e.clone())?;
+            (self.write_at_curr_seek)(self, e.clone())?;
         }
         
         Ok(())
@@ -179,7 +219,22 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
     fn expand(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.cap = self.cap * 2;
-        self.file.set_len(self.cap * self.element_size() as u64)?;
+        let new_file_size = self.cap * (self.element_size() as u64);
+        while let Err(_) = self.file.set_len(new_file_size) {
+            self.replace_with_shadow()?;
+        }
+        for i in 0..self.shadows.len() {
+            match self.shadows[i].set_len(new_file_size) {
+                Ok(_) => (),
+                Err(_) => {
+                    // This shadow is having write issues, replace it with another shadow.
+                    // This new replacement doesn't need to be expanded like the others since it's
+                    // a fresh copy of the original which has already been expanded.
+                    self.replace_shadow_at_index(i)?;
+                }
+            }
+
+        }
         Ok(())
     }
 
@@ -199,7 +254,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     pub fn try_push(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
         if self.len < std::u64::MAX {
             self.expand_if_needed()?;
-            self.write_at_curr_seek(value)?;
+            (self.write_at_curr_seek)(self, value.clone())?;
             self.len = self.len + 1;
             Ok(())
         }
@@ -264,7 +319,12 @@ impl<T: Desse + DesseSized> VecFile<T> {
     fn read_at_curr_seek(&mut self) -> Result<T, Box<dyn std::error::Error>> {
         let element_size = self.element_size();
         let mut buf = Vec::with_capacity(element_size);
-        (&mut self.file).take(element_size as u64).read_to_end(&mut buf)?;
+        while let Err(_) = (&mut self.file).take(element_size as u64).read_to_end(&mut buf) {
+            // A read error occured for some reason, replace the main file with one of it's
+            // shadows
+            self.replace_with_shadow()?;
+        }
+            
 
         // We know the size of <T as Desse>::Output, and we know it's a u8 array of that
         // size, so even though the compilier doesn't know that, we can use transmute to treat it
@@ -272,26 +332,145 @@ impl<T: Desse + DesseSized> VecFile<T> {
         Ok(de_from::<T>(&buf)?)
     }
 
+    // Writes to just the underlying file 
+    fn write_solo(&mut self, value: T) -> Result<(), Box<dyn std::error::Error>> {
+        let value_ser = ser_to::<T>(&value)?;
+        self.file.write_all(value_ser.as_slice())?;
+        Ok(())
+    }
 
-    fn write_at_curr_seek(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
-        let val_ser = value.serialize();
-        
-        // We know the size of <T as Desse>::Output, and we know it's a u8 array of that
-        // size, so even though the compilier doesn't know that, we can use transmute to treat it
-        // as such. This should always be safe as long as <T as Desse>::Output is a array of u8.
-        unsafe {
-            let ptr: * const u8 = std::mem::transmute(&val_ser as * const _);
-            let val_ser_recon = std::slice::from_raw_parts(ptr, self.element_size());
-            self.file.write_all(val_ser_recon)?; 
+    fn write_with_shadows(&mut self, value: T) -> Result<(), Box<dyn std::error::Error>> {
+        let value_ser = ser_to::<T>(&value)?;
+
+        while let Err(_) = self.file.write_all(value_ser.as_slice()) {
+            // The write failed for some reason, replace the main file with one of it's shadows
+            self.replace_with_shadow()?;
+        }
+
+        for shadow in &mut self.shadows {
+            //TODO if a write fails replace it with a new shadow
+            shadow.write_all(value_ser.as_slice())?;
         }
         Ok(())
     }
+
+    fn replace_with_shadow(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.shadows.len() == 0 {
+            // This should never happen, but if it does, that means no shadows exist to replace the
+            // original file, and this would only be called if the original file is no longer
+            // accessible. In such a case, we are in a very bad state, so panic.
+            panic!("This is a bug. Shadow replacement shouldn't occur when no shadows have been set");
+        }
+
+        self.file = self.shadows.pop().unwrap();
+        self.add_shadows(1)?;
+        Ok(())
+
+    }
+
+    fn replace_shadow_at_index(&mut self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let replacement = self.new_shadow()?;
+        self.shadows[index] = replacement;
+        Ok(())
+    }
+
+    /// Creates a new shadow of the VecFile's file
+    fn new_shadow(&mut self) -> Result<File, Box<dyn std::error::Error>> {
+        // Continually generate temporary files until one passes the read/write test
+        let mut file = tested_tempfile();
+        file.seek(SeekFrom::Start(0))?;
+
+        file.set_len(self.file.metadata()?.len())?;
+        let mut orig_read_fail_counter = 0;
+        let orig_read_fail_counter_max = 5;
+        while let Err(_) = std::io::copy(&mut self.file, &mut file) {
+            if let Ok(_) = rw_test(&mut file) {
+                // The destination file is passing read/write tests still, so the issue
+                // lies with the original file potentially.
+                
+                orig_read_fail_counter = orig_read_fail_counter + 1;
+                if orig_read_fail_counter == orig_read_fail_counter_max {
+                    // The original file has failed too many times.
+                    if self.shadows.len() == 0 {
+                        // The destination file is ok, so there's an issue with the
+                        // original, and with no other shadows, the data is irrecoverable.
+                        return Err(Error::IrrecoverableState.into());
+                    }
+                    else {
+                        // Replace the original 
+                        self.replace_with_shadow()?;
+                    }
+                }
+            }
+
+            else {
+                // Something happened to the tested temp file between generation and 
+                // copying data over. Generate a new one.
+                file = tested_tempfile();
+                orig_read_fail_counter = 0;
+            }
+        }
+        self.reset_seek_to_len()?;
+        Ok(file)
+    }
+        
+
+
+
 
    
 
 }
 
-impl<T: Desse + DesseSized> std::iter::IntoIterator for &VecFile<T> {
+impl<T: Desse + DesseSized + PartialEq + Eq + Clone + std::fmt::Debug> VecFile<T> { 
+    pub fn confirm_shadow_equivalence(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+
+        if self.shadows.len() > 1 {
+            // Compare the first two shadows
+            for i in 0..self.shadows.len() - 1 {
+                unsafe {
+                    let s1 = VecFile::<T>::from_raw_parts(self.shadows[i].try_clone().unwrap(),
+                                                         self.len,
+                                                         self.cap);
+                    let s2 = VecFile::<T>::from_raw_parts(self.shadows[i + 1].try_clone().unwrap(),
+                                                         self.len,
+                                                         self.cap);
+
+                    // Iterate through both the current shadow and next shadow and check that all
+                    // elements are equal
+                    if !s1.into_iter()
+                             .zip(s2.into_iter())
+                             .all(|(e1, e2)| e1 == e2) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        // All shadows are equivalent, or there's only one shadow.
+        // Compare the first shadow to the main original
+        unsafe {
+            let orig = VecFile::<T>::from_raw_parts(self.file.try_clone().unwrap(),
+                                                   self.len,
+                                                   self.cap);
+            let s1 = VecFile::from_raw_parts(self.shadows[0].try_clone().unwrap(),
+                                                self.len,
+                                                self.cap);
+
+
+            let ret = orig.into_iter()
+                            .zip(s1.into_iter())
+                            .all(|(e1, e2)| e1 == e2);
+            self.reset_seek_to_len()?;
+            Ok(ret)
+        }
+    }
+} 
+
+
+        
+
+impl<T: Desse + DesseSized + Clone> std::iter::IntoIterator for &VecFile<T> {
     type Item = T;
     type IntoIter = VecFileIterator<T>;
 
@@ -308,7 +487,7 @@ impl<T: Desse + DesseSized> std::iter::IntoIterator for &VecFile<T> {
 }
 
 
-impl<T: Desse + DesseSized> std::convert::TryFrom<Vec<T>> for VecFile<T> {
+impl<T: Desse + DesseSized + Clone> std::convert::TryFrom<Vec<T>> for VecFile<T> {
     type Error = Box<dyn std::error::Error>;
     fn try_from(vec: Vec<T>) -> Result<Self, Self::Error> {
         let mut ret = VecFile::new()?;
@@ -318,7 +497,7 @@ impl<T: Desse + DesseSized> std::convert::TryFrom<Vec<T>> for VecFile<T> {
     }
 }
 
-impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for VecFile<T> {
+impl<T: Desse + DesseSized + Clone> std::convert::TryInto<Vec<T>> for VecFile<T> {
     type Error = Box<dyn std::error::Error>;
     fn try_into(self) -> Result<Vec<T>, Self::Error> {
         if self.len() > (std::usize::MAX as u64) {
@@ -338,14 +517,14 @@ impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for VecFile<T> {
 
 
 
-pub struct VecFileIterator<T: Desse + DesseSized> {
+pub struct VecFileIterator<T: Desse + DesseSized + Clone> {
     file: File,
     len: u64,
     counter: u64,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Desse + DesseSized> std::iter::Iterator for VecFileIterator<T> {
+impl<T: Desse + DesseSized + Clone> std::iter::Iterator for VecFileIterator<T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
         if self.counter < self.len {
@@ -375,6 +554,8 @@ pub enum Error {
     PushOnFull,
     LenExceedsUsize(u64),
     InequalSizeForDe(usize, usize),
+    RWTestFailedNotEqual([u8; 4], [u8; 4]),
+    IrrecoverableState,
 }
 
 impl std::fmt::Display for Error {
@@ -395,6 +576,14 @@ impl std::fmt::Display for Error {
                        size_given,
                        size_required
                        ),
+            Error::RWTestFailedNotEqual(buf_in, buf_out) => 
+                write!(f, "Read/Write test failed on file, output != input: {:?} != {:?}",
+                       buf_in,
+                       buf_out
+                       ),
+            Error::IrrecoverableState => 
+                write!(f,
+        "No available shadows for replacement and the main file is in an irrecoverable state")
         }
     }
 }
@@ -402,10 +591,12 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 
-pub(crate) fn de_from<T: Desse + DesseSized>(buf: &[u8]) -> Result<T, Box<dyn std::error::Error>> {
+// utility functions
 
-    if buf.len() != std::mem::size_of::<T>() {
-        return Err(Error::InequalSizeForDe(buf.len(), std::mem::size_of::<T>()).into());
+pub(crate) fn de_from<T: Desse + DesseSized>(buf: &[u8]) -> Result<T, Box<dyn std::error::Error>> {
+    let se_size = std::mem::size_of::<<T as Desse>::Output>();
+    if buf.len() != se_size {
+        return Err(Error::InequalSizeForDe(buf.len(), se_size).into());
     }
 
     // We know the size of <T as Desse>::Output, and we know it's a u8 array of that
@@ -416,7 +607,51 @@ pub(crate) fn de_from<T: Desse + DesseSized>(buf: &[u8]) -> Result<T, Box<dyn st
    }
 }
 
+pub(crate) fn ser_to<T: Desse + DesseSized>(value: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let se_size = std::mem::size_of::<<T as Desse>::Output>();
+    let val_ser = value.serialize();
+    
+    // We know the size of <T as Desse>::Output, and we know it's a u8 array of that
+    // size, so even though the compilier doesn't know that, we can use transmute to treat it
+    // as such. This should always be safe as long as <T as Desse>::Output is a array of u8.
+    unsafe {
+        let ptr: * const u8 = std::mem::transmute(&val_ser as * const _);
+        Ok(std::slice::from_raw_parts(ptr, se_size).to_vec())
+    }
 
+
+}
+
+/// Tests reading and writing to the specified file, and returns it if it passes
+pub(crate) fn rw_test(file: &mut File) -> Result<(), Box<dyn std::error::Error>> {
+    let buf_in = [0, 3, 6, 1];
+    let mut buf_out = [0, 0, 0, 0];
+    file.write_all(&buf_in)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut buf_out)?;
+    file.seek(SeekFrom::Start(0))?; // Reset seek to the beginning
+    if buf_in == buf_out {
+        Ok(())
+    }
+    else {
+        Err(Error::RWTestFailedNotEqual(buf_in, buf_out).into())
+    }
+
+}
+
+/// Continually generates tempfiles until one passes the rw test.
+/// They will pass the first time a vast majority of the time, but in case of some underlying OS
+/// error, we can grab a new one and test and so on.
+pub(crate) fn tested_tempfile() -> File {
+    loop {
+        if let Ok(mut file) = tempfile::tempfile() {
+            if let Ok(_) = rw_test(&mut file) {
+                file.set_len(0).unwrap();
+                break file;
+            }
+        }
+    }
+}
 
 
 #[allow(unused_variables)]
@@ -472,21 +707,22 @@ mod tests {
     #[test]
     fn slices() {
         let mut f: VecFile<u16> = VecFile::new().unwrap();
-        let slice = [0x1111, 0x3333, 0x2222, 0xffff, 0xdddd];
+        let slice = [123, 456, 789, 987, 654];
         f.extend_from_slice(&slice).unwrap();
+
         
-        assert_eq!(f.get(0), 0x1111);
-        assert_eq!(f.get(3), 0xffff);
-        assert_eq!(f.get(2), 0x2222);
-        assert_eq!(f.get(4), 0xdddd);
-        assert_eq!(f.get(1), 0x3333);
+        assert_eq!(f.get(0), 123);
+        assert_eq!(f.get(3), 987);
+        assert_eq!(f.get(2), 789);
+        assert_eq!(f.get(4), 654);
+        assert_eq!(f.get(1), 456);
     }
 
     #[test]
     fn iterator() {
         let orig_values: Vec<u16> = vec![0x2222, 0xffff, 0xdddd, 0xaaaa, 0x8888];
-        let f: VecFile<u16> = orig_values.clone().try_into().unwrap();
-        
+        let mut f: VecFile<u16> = VecFile::new().unwrap();
+        f.extend_from_slice(orig_values.as_slice()).unwrap();
         for (orig, arr_file) in orig_values.into_iter().zip(f.into_iter()) {
             assert_eq!(orig, arr_file);
         }
@@ -518,11 +754,26 @@ mod tests {
             assert_eq!(orig_vec[i], vec[i]);
         }
     }
+    #[test]
+    fn shadows() {
+        //let mut f: VecFile<u16> = vec![1, 2, 1, 2, 122, 155].try_into().unwrap();
+        let mut f: VecFile<u16> = VecFile::new().unwrap();
+        f.add_shadows(3).unwrap();
+        f.push(&1);
+        f.push(&2);
+        f.push(&3);
+        assert!(f.confirm_shadow_equivalence().unwrap());
+        f.push(&4);
+        assert!(f.confirm_shadow_equivalence().unwrap());
+    }
+
+//    #[test]
+//    fn rounded_test() {
+
 
 
 
 }
-
 
 
 
