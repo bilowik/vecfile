@@ -23,14 +23,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
    
     /// Creates a new empty VecFile using a temporary file
     pub fn new() -> Self {
-        Self {
-            file: tested_tempfile(),
-            shadows: Vec::with_capacity(0), // Wait to allocate, since most won't use shadows
-            write_at_curr_seek: Self::write_solo, // The function that is called on writes.
-            len: 0,
-            cap: 8,
-            _phantom: PhantomData,
-        }
+        Default::default()
     }
 
     /// This creates a new VecFile that points at a file with the given path. 
@@ -417,11 +410,30 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
 }
 
-
+/*
 impl<T: Desse + DesseSized> Clone for VecFile<T> {
-    fn clone(&self) -> Self {
-        Self {
+    fn clone(&mut self) -> Self {
+        // This could be done much more efficiently, however it's prefered to have shadow
+        // protection in case of read/write issues, so we want to do it with VecFile's methods
+        
+        let mut clone = Default::default();
+        
+ */       
 
+
+
+impl<T: Desse + DesseSized> Default for VecFile<T> {
+    fn default() -> Self {
+        Self {
+            file: tested_tempfile(),
+            shadows: Vec::with_capacity(0), // Wait to allocate, since most won't use shadows
+            write_at_curr_seek: Self::write_solo, // The function that is called on writes.
+            len: 0,
+            cap: 8,
+            _phantom: PhantomData,
+        }
+    }
+}
 
 
 impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> { 
