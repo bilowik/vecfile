@@ -106,6 +106,18 @@ impl<T: Desse + DesseSized> VecFile<T> {
         Ok(())
     }
 
+    pub fn remove_shadows(&mut self, shadow_to_remove: usize) {
+
+        for _ in 0..shadow_to_remove {
+            self.shadows.pop();
+        }
+    }
+
+    pub fn clear_all_shadows(&mut self) {
+        self.shadows = vec![];
+    }
+
+
 
 
     /// Checks that the given index is a useable index, which it will be as long as 
@@ -247,6 +259,21 @@ impl<T: Desse + DesseSized> VecFile<T> {
         }
     }
 
+    /// Tries to create a VecFile from an iterator
+    pub fn try_from_iter<U: IntoIterator<Item=T>>(&mut self, iter: U) 
+        -> Result<(), Box<std::error::Error>> {
+
+        let mut vf = VecFile::new();
+        vf.add_shadows(1)?; // To protect against potential read errors.
+
+        for element in iter {
+            vf.try_push(&element)?;
+        }
+        
+        vf.remove_shadows(1);
+        vf
+    }
+
     fn expand(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.cap = self.cap * 2;
         let new_file_size = self.cap * (self.element_size() as u64);
@@ -286,7 +313,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// This will return an Error if the underlying file's len would exceed std::u64::MAX or 
     /// if the underlying file has write issues and no shadows exist.
     pub fn try_push(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
-        if self.calc_index(self.len)? {
+        if let Ok(_) = self.calc_index(self.len) {
             self.expand_if_needed()?;
             (self.write_at_curr_seek)(self, value)?;
             self.len = self.len + 1;
@@ -342,6 +369,10 @@ impl<T: Desse + DesseSized> VecFile<T> {
         std::mem::size_of::<<T as Desse>::Output>()
     }
 
+    pub fn max_capacity() -> u64 {
+        std::u64::MAX / std::mem::size_of::<<T as Desse>::Output>() as u64  
+    }
+
 
     /// Copies the original underlying file into a new file at path.
     /// If a file exists there, it gets truncated.
@@ -359,6 +390,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
         self.file = named_file;
         Ok(())
     }
+
 
 
 
@@ -571,6 +603,23 @@ impl<T: Desse + DesseSized> std::convert::TryInto<Vec<T>> for VecFile<T> {
         Ok(vec)
 
     }
+}
+
+
+
+impl<T: Desse + DesseSized> std::iter::FromIterator<T> for VecFile<T> {
+    fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> Self {
+        let mut vf = VecFile::new();
+        vf.add_shadows(1).unwrap(); // To protect against potential read errors.
+
+        for element in iter {
+            vf.push(&element);
+        }
+        
+        vf.remove_shadows(1);
+        vf
+    }
+    
 }
 
 
