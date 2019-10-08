@@ -404,18 +404,21 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// file.
     pub fn try_insert(&mut self, index: u64, element: &T) -> Result<(), Box<dyn std::error::Error>> {
         if !self.bounds_check(index) {
-            return Error::OutOfBounds(index, self.len);
+            return Err(Error::OutOfRange(index, self.len).into());
         }
 
         self.expand_if_needed()?; // Expand if the collection is currently full
 
+        self.len = self.len + 1;
+        // Increment the len for the shuffle, this also means we don't need to iterate to the len +
+        // 1.
+
         // Shuffle all elements to the right
-        let mut i: u64 = self.len + 1;
-        for i in (index..(self.len + 1)).rev() {
+        for i in (index..self.len).rev() {
             let curr = self.try_get(i - 1)?;
             self.try_set(i, &curr)?;
         }
-
+        
         self.set(index, element); // Insert the new element
         Ok(())
     }
@@ -436,15 +439,16 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// file.
     pub fn try_remove(&mut self, index: u64) -> Result<T, Box<dyn std::error::Error>> {
         if !self.bounds_check(index) {
-            return Error::OutOfBounds(index, self.len);
+            return Err(Error::OutOfRange(index, self.len).into());
         }
 
         let ret_element = self.try_get(index)?;
 
-        for i in index..(self.len) {
-            let curr = self.try_get(i)?;
-            self.try_set(i - 1, &curr)?;
+        for i in index..(self.len - 1) {
+            let curr = self.try_get(i + 1)?;
+            self.try_set(i, &curr)?;
         }
+        self.len = self.len - 1;
         Ok(ret_element)
     }
 
@@ -453,7 +457,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     ///
     /// This will panic if index > self.len or if there's an issue with the underlying
     /// file.
-    pub fn remove(&mut self, index: u64) -> Result<T, Box<dyn std::error::Error>> {
+    pub fn remove(&mut self, index: u64) -> T {
         self.try_remove(index).unwrap()
     }
 
@@ -947,6 +951,19 @@ mod tests {
         assert!(f.confirm_shadow_equivalence().unwrap());
         f.push(&4);
         assert!(f.confirm_shadow_equivalence().unwrap());
+    }
+
+    #[test]
+    fn insert_remove() {
+        let mut vec = vec![12u32, 8, 4, 0, 4, 9, 1, 0];
+        let mut vecf: VecFile<_> = vec.clone().try_into().unwrap();
+        assert_eq!(vec.remove(1), vecf.remove(1));
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<_>>());
+        assert_eq!(vec.remove(3), vecf.remove(3));
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<_>>());
+        assert_eq!(vec.insert(3, 123), vecf.insert(3, &123));
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<_>>());
+
     }
 
     #[test]
