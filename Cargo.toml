@@ -8,9 +8,12 @@ repository="https://github.com/bilowik/vecfile"
 categories=["data-structures"]
 license-file = "LICENSE"
 readme = "README.md"
+exclude=["todo", ".vscode"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 tempfile = "3.1.0"
 desse = "0.2.1"
+
+
