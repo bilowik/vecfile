@@ -70,20 +70,28 @@ impl<T: Desse + DesseSized> VecFile<T> {
         }
     }
     
-   
-    /// Since the Clone trait requires self to be immutable, a standalone method had to be written.
-    pub fn clone(&mut self) -> Self {
+  
+    /// Makes a deep copy
+    ///
+    /// This can fail if self doesn't have any shadows and theres a reads/write issue.
+    pub fn try_clone(&mut self) -> Result<Self, Box<dyn std::error::Error>> {
         // This could be done much more efficiently, however it's prefered to have shadow
         // protection in case of read/write issues, so we want to do it with VecFile's methods
         
         let mut clone = Self::default();
-        clone.add_shadows(self.shadows.len()).unwrap();
-        clone.reserve(self.len).unwrap(); // Should be relatively safe if shadows are in play
+        clone.add_shadows(self.shadows.len())?;
+        clone.reserve(self.len)?; // Should be relatively safe if shadows are in play
 
         for element in self.into_iter() {
             clone.push(&element);
         }
-        clone
+        Ok(clone)
+    }
+
+    /// Makes a deep copy
+    /// This will panic if self doesn't have any shadows and there's a read/write issue.
+    pub fn clone(&mut self) -> Self {
+        self.try_clone().unwrap()
     }
 
     /// Adds a number of additional shadows to the VecFile.
@@ -606,6 +614,12 @@ where T: Desse + DesseSized + PartialEq + Eq,
         self.into_iter().zip(other.into_iter()).all(|(e1, e2)| &e1 == e2)
     }
 }
+impl<T> PartialEq for VecFile<T> 
+where T: Desse + DesseSized + std::fmt::Debug + PartialEq + Eq {
+    fn eq(&self, other: &Self) -> bool {
+        self.into_iter().zip(other.into_iter()).all(|(e1, e2)| dbg!(e1) == dbg!(e2))
+    }
+}
 
 
 impl<T: Desse + DesseSized> Default for VecFile<T> {
@@ -751,6 +765,15 @@ impl<T: Desse + DesseSized> std::iter::Iterator for VecFileIterator<T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
         if self.counter < self.len {
+           
+            // We re-seek on every iteration to prevent a bug where when iterating over two
+            // VecFiles at the same time, where both VecFiles are the same instance, the iterations
+            // would conflict. 
+            // Seeking every iteration sets the cursor to the right position even if another
+            // iterator over the same VecFile exists.
+            self.file.seek(SeekFrom::Start(self.counter * (std::mem::size_of::<T>() as u64))).unwrap();
+
+
             self.counter = self.counter + 1;
             let mut buf = Vec::with_capacity(std::mem::size_of::<T>());
             (&mut self.file).take(std::mem::size_of::<T>() as u64).read_to_end(&mut buf).unwrap();
@@ -1049,6 +1072,8 @@ mod tests {
         assert!(vecf.confirm_shadow_equivalence().unwrap());
         vec.truncate(3);
         vecf.truncate(3);
+        let vecf2 = vecf.try_clone().unwrap();
+        assert_eq!(vecf, vec);
         assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
         assert!(vecf.confirm_shadow_equivalence().unwrap());
         vec.truncate(0);
@@ -1056,6 +1081,8 @@ mod tests {
         assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
         assert!(vecf.confirm_shadow_equivalence().unwrap());
     }
+
+
 
 
 
