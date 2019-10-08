@@ -510,6 +510,14 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
 
 
+impl<T: Desse + DesseSized + PartialEq + Eq>  PartialEq for VecFile<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.into_iter().zip(other.into_iter()).all(|(e1, e2)|e1 == e2)
+    }
+}
+
+impl<T: Desse + DesseSized + PartialEq + Eq> Eq for VecFile<T> {}
+
 
 impl<T: Desse + DesseSized> Default for VecFile<T> {
     fn default() -> Self {
