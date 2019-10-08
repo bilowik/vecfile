@@ -955,13 +955,20 @@ mod tests {
 
     #[test]
     fn insert_remove() {
-        let mut vec = vec![12u32, 8, 4, 0, 4, 9, 1, 0];
+        let orig = vec![12u32, 8, 4, 0, 4, 9, 1, 0];
+        let mut vec = orig.clone();
         let mut vecf: VecFile<_> = vec.clone().try_into().unwrap();
         assert_eq!(vec.remove(1), vecf.remove(1));
         assert_eq!(vec, vecf.into_iter().collect::<Vec<_>>());
         assert_eq!(vec.remove(3), vecf.remove(3));
         assert_eq!(vec, vecf.into_iter().collect::<Vec<_>>());
         assert_eq!(vec.insert(3, 123), vecf.insert(3, &123));
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<_>>());
+
+        let mut vec = orig.clone();
+        let mut vecf: VecFile<_> = vec.clone().try_into().unwrap();
+        vecf.insert(7, &100);
+        vec.insert(7, 100);
         assert_eq!(vec, vecf.into_iter().collect::<Vec<_>>());
 
     }
@@ -1007,7 +1014,10 @@ mod tests {
         vecf.truncate(3);
         assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
         assert!(vecf.confirm_shadow_equivalence().unwrap());
-
+        vec.truncate(0);
+        vecf.truncate(0);
+        assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
+        assert!(vecf.confirm_shadow_equivalence().unwrap());
         
 
 
