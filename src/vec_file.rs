@@ -397,6 +397,66 @@ impl<T: Desse + DesseSized> VecFile<T> {
         Ok(())
     }
 
+    /// Tries to insert the given element into te specified index and shifts the elements to the 
+    /// right.
+    ///
+    /// This will return an error if index > self.len or if there's an issue with the underlying
+    /// file.
+    pub fn try_insert(&mut self, index: u64, element: &T) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.bounds_check(index) {
+            return Error::OutOfBounds(index, self.len);
+        }
+
+        self.expand_if_needed()?; // Expand if the collection is currently full
+
+        // Shuffle all elements to the right
+        let mut i: u64 = self.len + 1;
+        for i in (index..(self.len + 1)).rev() {
+            let curr = self.try_get(i - 1)?;
+            self.try_set(i, &curr)?;
+        }
+
+        self.set(index, element); // Insert the new element
+        Ok(())
+    }
+
+    /// Insert the given element into te specified index and shifts the elements to the 
+    /// right.
+    ///
+    /// This will panic if index > self.len or if there's an issue with the underlying
+    /// file.
+    pub fn insert(&mut self, index: u64, element: &T) {
+        self.try_insert(index, element).unwrap();
+    }
+
+
+    /// Tries to remove the element at the specified index and shfits the elements to the left.
+    ///
+    /// This will return an error if index > self.len or if there's an issue with the underlying
+    /// file.
+    pub fn try_remove(&mut self, index: u64) -> Result<T, Box<dyn std::error::Error>> {
+        if !self.bounds_check(index) {
+            return Error::OutOfBounds(index, self.len);
+        }
+
+        let ret_element = self.try_get(index)?;
+
+        for i in index..(self.len) {
+            let curr = self.try_get(i)?;
+            self.try_set(i - 1, &curr)?;
+        }
+        Ok(ret_element)
+    }
+
+
+    /// Removes the element at the specified index and shfits the elements to the left.
+    ///
+    /// This will panic if index > self.len or if there's an issue with the underlying
+    /// file.
+    pub fn remove(&mut self, index: u64) -> Result<T, Box<dyn std::error::Error>> {
+        self.try_remove(index).unwrap()
+    }
+
 
 
 
