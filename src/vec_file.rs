@@ -572,15 +572,15 @@ impl<T: Desse + DesseSized> VecFile<T> {
 }
 
 
+// Implements PartialEq for any type whose reference implements IntoIterator<Item=&T>
+impl<T, U> PartialEq<U> for VecFile<T> 
+where T: Desse + DesseSized + PartialEq + Eq,
+      for<'a> &'a U: IntoIterator<Item=&'a T> {
 
-
-impl<T: Desse + DesseSized + PartialEq + Eq>  PartialEq for VecFile<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.into_iter().zip(other.into_iter()).all(|(e1, e2)|e1 == e2)
+    fn eq(&self, other: &U) -> bool {
+        self.into_iter().zip(other.into_iter()).all(|(e1, e2)| &e1 == e2)
     }
 }
-
-impl<T: Desse + DesseSized + PartialEq + Eq> Eq for VecFile<T> {}
 
 
 impl<T: Desse + DesseSized> Default for VecFile<T> {
@@ -698,6 +698,18 @@ impl<T: Desse + DesseSized> std::iter::FromIterator<T> for VecFile<T> {
         vf
     }
     
+}
+
+
+impl<T: Desse + DesseSized + std::fmt::Debug> std::fmt::Debug for VecFile<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut values_string = self
+                            .into_iter()
+                            .fold(String::new(), |acc, val| acc + &format!("{:?}, ", val));
+        values_string.truncate(values_string.len() - 2); // truncates the last ',' and space
+
+        write!(f, "[{}]", values_string)
+    }
 }
 
 
@@ -969,7 +981,7 @@ mod tests {
         let mut vecf: VecFile<_> = vec.clone().try_into().unwrap();
         vecf.insert(7, &100);
         vec.insert(7, 100);
-        assert_eq!(vec, vecf.into_iter().collect::<Vec<_>>());
+        assert_eq!(vecf, vec);
 
     }
 
