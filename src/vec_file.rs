@@ -572,7 +572,9 @@ impl<T: Desse + DesseSized> VecFile<T> {
 }
 
 
-// Implements PartialEq for any type whose reference implements IntoIterator<Item=&T>
+/// Implements PartialEq for any type whose reference implements IntoIterator<Item=&T>
+/// Unfortunately, because of orphaning rules, this cannot be implemented as U == VecFile
+/// as well, so VecFile will always have to come first in equalities. 
 impl<T, U> PartialEq<U> for VecFile<T> 
 where T: Desse + DesseSized + PartialEq + Eq,
       for<'a> &'a U: IntoIterator<Item=&'a T> {
