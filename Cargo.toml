@@ -3,6 +3,11 @@ name = "vec_file"
 version = "0.1.0"
 authors = ["Aaron Flores <aaronjflores962@gmail.com>"]
 edition = "2018"
+description = "A Vec-type collection that sits in a file vs in memory"
+repository="https://github.com/bilowik/vecfile"
+categories=["data-structures"]
+license-file = "LICENSE"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
