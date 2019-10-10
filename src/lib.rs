@@ -4,7 +4,7 @@
 ///
 /// ## Example
 /// ```
-/// use vec_file::*;
+/// use vecfile::vec_file::*;
 ///
 /// fn main() {
 ///     let mut vf = VecFile::new();
