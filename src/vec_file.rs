@@ -80,12 +80,13 @@ impl<T: Desse + DesseSized> VecFile<T> {
         let shadows = self.shadows.replace(None).unwrap();
 
         clone.add_shadows(shadows.len())?;
+        self.shadows.replace(Some(shadows));
+
         clone.reserve(self.len)?; // Should be relatively safe if shadows are in play
 
         for element in self.into_iter() {
             clone.push(&element);
         }
-        self.shadows.replace(Some(shadows));
         Ok(clone)
     }
 
@@ -100,8 +101,8 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// This does not need to be re-done if a shadow is used to replace the original as its done
     /// automatically.
     pub fn add_shadows(&self, additional_shadows: usize) -> Result<(), Box<dyn std::error::Error>> {
-        let mut shadows = self.shadows.replace(None).unwrap();
         if additional_shadows > 0 {
+            let mut shadows = self.shadows.replace(None).unwrap();
             shadows.reserve(additional_shadows);
             self.shadows.replace(Some(shadows));
             for _ in 0..additional_shadows {
@@ -1121,7 +1122,6 @@ mod tests {
         assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
         assert!(vecf.confirm_shadow_equivalence().unwrap());
     }
-
 
 
 
