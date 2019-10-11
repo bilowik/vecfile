@@ -34,9 +34,10 @@ mod tests {
 
         b.iter(|| {
             for _ in 0u64..(vf.len() - 1) {
-                vf.pop();
+                dbg!(vf.pop());
             }
         });
+
     }
 
     #[bench]
