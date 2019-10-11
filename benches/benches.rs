@@ -60,7 +60,7 @@ mod tests {
         const LEN: usize = 1024;
         let buf: [u8; LEN] = unsafe { [std::mem::MaybeUninit::uninit().assume_init(); LEN] };
         let mut vf = VecFile::new();
-        vf.resize(LEN as u64, &0u8);
+        vf.resize(LEN as u64, &0u8).unwrap();
 
         b.iter(|| {
             for (i, val) in buf.iter().enumerate() {
