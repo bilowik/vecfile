@@ -20,8 +20,8 @@ use std::mem::transmute;
 /// Note: Index and IndexMut are not implemented since they require returning references, and we
 /// cannot get a reference from a section of a file.
 pub struct VecFile<T: Desse + DesseSized> {
-    file: Cell<File>, // The underlying file 
-    shadows: Cell<Vec<File>>, // The shadows that may exist
+    file: Cell<Option<File>>, // The underlying file 
+    shadows: Cell<Option<Vec<File>>>, // The shadows that may exist
     len: u64, // The current number of elements in the file
     cap: u64, // The max number of elements the file can hold at its given allocated lenght
     _phantom: PhantomData<*const T>, // Phantom data for the generic type parameter
@@ -45,8 +45,8 @@ impl<T: Desse + DesseSized> VecFile<T> {
         -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self { // TODO: Replace with default
             file: 
-                OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?.into(),
-            shadows: Vec::with_capacity(0).into(),
+                Some(OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?).into(),
+            shadows: Some(Vec::with_capacity(0)).into(),
             len: 0,
             cap: 8,
             _phantom: PhantomData,
@@ -60,8 +60,8 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// T.
     pub unsafe fn from_raw_parts(file: File, len: u64, cap: u64) -> Self {
         Self {
-            file: file.into(),
-            shadows: Vec::with_capacity(0).into(),
+            file: Some(file).into(),
+            shadows: Some(Vec::with_capacity(0)).into(),
             len,
             cap,
             _phantom: PhantomData,
@@ -77,7 +77,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
         // protection in case of read/write issues, so we want to do it with VecFile's methods
         
         let mut clone = Self::default();
-        let shadows: &mut Vec<File> = unsafe { transmute(self.shadows.as_ptr()) };
+        let shadows = self.shadows.replace(None).unwrap();
 
         clone.add_shadows(shadows.len())?;
         clone.reserve(self.len)?; // Should be relatively safe if shadows are in play
@@ -85,6 +85,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
         for element in self.into_iter() {
             clone.push(&element);
         }
+        self.shadows.replace(Some(shadows));
         Ok(clone)
     }
 
@@ -99,12 +100,15 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// This does not need to be re-done if a shadow is used to replace the original as its done
     /// automatically.
     pub fn add_shadows(&self, additional_shadows: usize) -> Result<(), Box<dyn std::error::Error>> {
-        let shadows: &mut Vec<File> = unsafe { transmute(self.shadows.as_ptr()) };
+        let mut shadows = self.shadows.replace(None).unwrap();
         if additional_shadows > 0 {
             shadows.reserve(additional_shadows);
+            self.shadows.replace(Some(shadows));
             for _ in 0..additional_shadows {
                 let new_shadow = self.new_shadow()?;
+                let mut shadows = self.shadows.replace(None).unwrap();
                 shadows.push(new_shadow);
+                self.shadows.replace(Some(shadows));
             }
         }
         Ok(())
@@ -120,7 +124,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
     /// Removes all shadows
     pub fn clear_shadows(&mut self) {
-        self.shadows = vec![].into();
+        self.shadows = Some(vec![]).into();
     }
 
 
@@ -173,9 +177,11 @@ impl<T: Desse + DesseSized> VecFile<T> {
         }
 
         let offset_index = self.calc_index(index)?;
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
-         
+
+        let mut file = self.file.replace(None).unwrap();
         file.seek(SeekFrom::Start(offset_index))?;
+        self.file.replace(Some(file));
+
         let ret = self.read_at_curr_seek()?;
         self.reset_seek_to_len()?;
         Ok(ret)
@@ -197,12 +203,13 @@ impl<T: Desse + DesseSized> VecFile<T> {
             // Index is out of range
             return Err(Error::OutOfRange(index, self.len).into());
         } 
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
-
 
 
         let offset_index = self.calc_index(index)?;
+
+        let mut file = self.file.replace(None).unwrap();
         file.seek(SeekFrom::Start(offset_index))?;
+        self.file.replace(Some(file));
         self.write_at_curr_seek(value)?;
         self.reset_seek_to_len()?;
         Ok(())
@@ -314,10 +321,10 @@ impl<T: Desse + DesseSized> VecFile<T> {
     }
 
     fn expand(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
-        let shadows: &mut Vec<File> = unsafe { transmute(self.shadows.as_ptr()) };
         self.cap = self.cap * 2;
         let new_file_size = self.cap * (self.element_size() as u64);
+        let shadows = self.shadows.replace(None).unwrap();
+        let file = self.file.replace(None).unwrap();
         while let Err(_) = file.set_len(new_file_size) {
             self.replace_with_shadow()?;
         }
@@ -333,6 +340,8 @@ impl<T: Desse + DesseSized> VecFile<T> {
             }
 
         }
+        self.shadows.replace(Some(shadows));
+        self.file.replace(Some(file));
         Ok(())
     }
 
@@ -344,8 +353,9 @@ impl<T: Desse + DesseSized> VecFile<T> {
     }
 
     fn reset_seek_to_len(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
+        let mut file = self.file.replace(None).unwrap();
         file.seek(SeekFrom::Start(self.calc_index(self.len)?))?;
+        self.file.replace(Some(file));
         Ok(())
     }
 
@@ -380,15 +390,19 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// if the list is empty.
     pub fn try_pop(&mut self) -> Result<T, Box<dyn std::error::Error>> {
         if self.len > 0 {
-            let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
+            let mut file = self.file.replace(None).unwrap();
             // The collection is not empty 
             // Moves back to the last element
             file.seek(SeekFrom::Current(-(self.element_size() as i64)))?; 
 
+            self.file.replace(Some(file));
             let ret = self.read_at_curr_seek()?;
             // The 'cursor' is now where it began, but we just popped the last element, move back
             // one element to point to the end of the collection.
+            
+            let mut file = self.file.replace(None).unwrap();
             file.seek(SeekFrom::Current(-(self.element_size() as i64)))?; 
+            self.file.replace(Some(file));
             
             self.len = self.len - 1; // Decrement len
             Ok(ret)
@@ -432,8 +446,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
                                 .open(path)?;
 
         std::io::copy(file, &mut named_file)?;
-        std::mem::drop(file); // Drop before it becomes a dangling pointer.
-        self.file = named_file.into();
+        self.file = Some(named_file).into();
         Ok(())
     }
 
@@ -505,16 +518,18 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
 
     fn read_at_curr_seek(&self) -> Result<T, Box<dyn std::error::Error>> {
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
+        let mut file = self.file.replace(None).unwrap();
         let element_size = self.element_size();
         let mut buf = Vec::with_capacity(element_size);
-        while let Err(_) =  file.take(element_size as u64).read_to_end(&mut buf) {
+        while let Err(_) =  (&mut file).take(element_size as u64).read_to_end(&mut buf) {
             // A read error occured for some reason, replace the main file with one of it's
             // shadows
             self.replace_with_shadow()?;
         }
             
 
+        self.file.replace(Some(file));
+        
         // We know the size of <T as Desse>::Output, and we know it's a u8 array of that
         // size, so even though the compilier doesn't know that, we can use transmute to treat it
         // as such. This should always be safe as long as <T as Desse>::Output is a array of u8.
@@ -523,23 +538,26 @@ impl<T: Desse + DesseSized> VecFile<T> {
 
 
     fn write_at_curr_seek(&mut self, value: &T) -> Result<(), Box<dyn std::error::Error>> {
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
-        let shadows: &mut Vec<File> = unsafe { transmute(self.shadows.as_ptr()) };
         let value_ser = ser_to::<T>(value)?;
+        let mut file = self.file.replace(None).unwrap();
 
         while let Err(_) = file.write_all(value_ser.as_slice()) {
             // The write failed for some reason, replace the main file with one of it's shadows
             self.replace_with_shadow()?;
         }
-        for shadow in shadows {
+
+        let mut shadows = self.shadows.replace(None).unwrap();
+        for shadow in &mut shadows {
             //TODO if a write fails replace it with a new shadow
             shadow.write_all(value_ser.as_slice())?;
         }
+        self.shadows.replace(Some(shadows));
+        self.file.replace(Some(file));
         Ok(())
     }
 
     fn replace_with_shadow(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let shadows: &mut Vec<File> = unsafe { transmute(self.shadows.as_ptr()) };
+        let mut shadows = self.shadows.replace(None).unwrap();
         if shadows.len() == 0 {
             // This should never happen, but if it does, that means no shadows exist to replace the
             // original file, and this would only be called if the original file is no longer
@@ -547,32 +565,34 @@ impl<T: Desse + DesseSized> VecFile<T> {
             panic!("This is a bug. Shadow replacement shouldn't occur when no shadows have been set");
         }
 
-        self.file.replace(shadows.pop().unwrap());
+        self.file.replace(Some(shadows.pop()).unwrap());
+        self.shadows.replace(Some(shadows));
         self.add_shadows(1)?;
         Ok(())
 
     }
 
     fn replace_shadow_at_index(&mut self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
-        let shadows: &mut Vec<File> = unsafe { transmute(self.shadows.as_ptr()) };
+        let mut shadows = self.shadows.replace(None).unwrap();
         let replacement = self.new_shadow()?;
         shadows[index] = replacement;
+        self.shadows.replace(Some(shadows));
         Ok(())
     }
 
     /// Creates a new shadow of the VecFile's file
     fn new_shadow(&self) -> Result<File, Box<dyn std::error::Error>> {
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
-        let shadows: &mut Vec<File> = unsafe { transmute(self.shadows.as_ptr()) };
         // Continually generate temporary files until one passes the read/write test
         let mut shadow = tested_tempfile();
+        let shadows = self.shadows.replace(None).unwrap();
+        let mut file = self.file.replace(None).unwrap();
 
         shadow.set_len(self.cap * self.element_size() as u64)?;
         let mut orig_read_fail_counter = 0;
         let orig_read_fail_counter_max = 5;
 
         while let Err(_) = file.seek(SeekFrom::Start(0))
-                                .and(std::io::copy(file, &mut shadow)) {
+                                .and(std::io::copy(&mut file, &mut shadow)) {
             // Either the seek or the copy failed, so test the dest file for writeability.        
            
             if let Ok(_) = rw_test(&mut shadow) {
@@ -585,6 +605,8 @@ impl<T: Desse + DesseSized> VecFile<T> {
                     if shadows.len() == 0 {
                         // The destination file is ok, so there's an issue with the
                         // original, and with no other shadows, the data is irrecoverable.
+                        self.shadows.replace(Some(shadows));
+                        self.file.replace(Some(file));
                         return Err(Error::IrrecoverableState.into());
                     }
                     else {
@@ -604,8 +626,10 @@ impl<T: Desse + DesseSized> VecFile<T> {
                 orig_read_fail_counter = 0;
             }
         }
-        self.reset_seek_to_len()?;
         shadow.seek(SeekFrom::Start(self.calc_index(self.len()).unwrap())).unwrap();
+        self.shadows.replace(Some(shadows));
+        self.file.replace(Some(file));
+        self.reset_seek_to_len()?;
         Ok(shadow)
     }
         
@@ -635,8 +659,8 @@ where T: Desse + DesseSized + std::fmt::Debug + PartialEq + Eq {
 impl<T: Desse + DesseSized> Default for VecFile<T> {
     fn default() -> Self {
         Self {
-            file: tested_tempfile().into(),
-            shadows: Vec::with_capacity(0).into(), // Wait to allocate, since most won't use shadows
+            file: Some(tested_tempfile()).into(),
+            shadows: Some(Vec::with_capacity(0)).into(), // Wait to alloc, since most won't use shadows
             len: 0,
             cap: 8,
             _phantom: PhantomData,
@@ -648,8 +672,8 @@ impl<T: Desse + DesseSized> Default for VecFile<T> {
 impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> { 
     pub fn confirm_shadow_equivalence(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
-        let shadows: &mut Vec<File> = unsafe { transmute(self.shadows.as_ptr()) };
+        let shadows = self.shadows.replace(None).unwrap();
+        let file = self.file.replace(None).unwrap();
 
         if shadows.len() > 1 {
             // Compare the first two shadows
@@ -687,6 +711,8 @@ impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> {
             let ret = orig.into_iter()
                             .zip(s1.into_iter())
                             .all(|(e1, e2)| e1 == e2);
+            self.shadows.replace(Some(shadows));
+            self.file.replace(Some(file));
             self.reset_seek_to_len()?;
             Ok(ret)
         }
@@ -701,11 +727,12 @@ impl<T: Desse + DesseSized> std::iter::IntoIterator for &VecFile<T> {
     type IntoIter = VecFileIterator<T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let file: &mut File = unsafe { transmute(self.file.as_ptr()) }; // Get file from cell
-        let mut file = file.try_clone().unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
+        let file = self.file.replace(None).unwrap();
+        let mut file_clone = file.try_clone().unwrap();
+        self.file.replace(Some(file));
+        file_clone.seek(SeekFrom::Start(0)).unwrap();
         VecFileIterator {
-            file,
+            file: file_clone,
             len: self.len,
             counter: 0,
             _phantom: PhantomData,
