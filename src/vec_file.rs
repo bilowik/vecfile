@@ -17,6 +17,12 @@ use std::mem::transmute;
 /// While it's not technically required, the reserve method can be used to reduce file system
 /// allocations, which may or may not be expensive depending on the underlying file system.
 ///
+/// The reasoning behind having separate methods for trying and not, is to provide convenience.
+/// When shadows are being used, it is relatively safe to call unwrap on try methods, so rather
+/// than calling unwrap on most method calls, provided are wrapper methods that simply panic rather
+/// than return an Err. 
+/// If shadows aren't being used, the try methods may be used to avoid errors.
+///
 /// Note: Index and IndexMut are not implemented since they require returning references, and we
 /// cannot get a reference from a section of a file.
 pub struct VecFile<T: Desse + DesseSized> {
@@ -72,7 +78,7 @@ impl<T: Desse + DesseSized> VecFile<T> {
     /// Makes a deep copy
     ///
     /// This can fail if self doesn't have any shadows and theres a reads/write issue.
-    pub fn try_clone(&mut self) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn try_clone(&self) -> Result<Self, Box<dyn std::error::Error>> {
         // This could be done much more efficiently, however it's prefered to have shadow
         // protection in case of read/write issues, so we want to do it with VecFile's methods
         
@@ -88,11 +94,6 @@ impl<T: Desse + DesseSized> VecFile<T> {
         Ok(clone)
     }
 
-    /// Makes a deep copy
-    /// This will panic if self doesn't have any shadows and there's a read/write issue.
-    pub fn clone(&mut self) -> Self {
-        self.try_clone().unwrap()
-    }
 
     /// Adds a number of additional shadows to the VecFile.
     /// 
@@ -645,6 +646,14 @@ impl<T: Desse + DesseSized> Default for VecFile<T> {
 }
 
 
+impl<T: Desse + DesseSized> Clone for VecFile<T> {
+    fn clone(&self) -> Self {
+        self.try_clone().unwrap()
+    }
+}
+
+
+
 impl<T: Desse + DesseSized + PartialEq + Eq + std::fmt::Debug> VecFile<T> { 
     pub fn confirm_shadow_equivalence(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         
@@ -1093,6 +1102,13 @@ mod tests {
         vecf.truncate(0);
         assert_eq!(vec, vecf.into_iter().collect::<Vec<u32>>());
         assert!(vecf.confirm_shadow_equivalence().unwrap());
+    }
+
+    #[test]
+    fn clone() {
+        let vf: VecFile<u8> = (vec![5u8, 1, 3, 9]).try_into().unwrap();
+        let vf_clone = vf.clone();
+        assert_eq!(vf, vf_clone);
     }
 
 
